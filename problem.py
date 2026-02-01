@@ -103,6 +103,7 @@ class Machine:
         scratch_size: int = SCRATCH_SIZE,
         trace: bool = False,
         value_trace: dict[Any, int] = {},
+        trace_path: str = "trace.json",
     ):
         self.cores = [
             Core(id=i, scratch=[0] * scratch_size, trace_buf=[]) for i in range(n_cores)
@@ -115,6 +116,7 @@ class Machine:
         self.cycle = 0
         self.enable_pause = True
         self.enable_debug = True
+        self.trace_path = trace_path
         if trace:
             self.setup_trace()
         else:
@@ -157,7 +159,7 @@ class Machine:
         See the format docs in case you want to add more info to the trace:
         https://docs.google.com/document/d/1CvAClvFfyA5R-PhYUmn5OOQtYMH4h6I0nSsKchNAySU/preview
         """
-        self.trace = open("trace.json", "w")
+        self.trace = open(self.trace_path, "w")
         self.trace.write("[")
         tid_counter = 0
         self.tids = {}
@@ -195,26 +197,29 @@ class Machine:
                 )
 
     def run(self):
-        for core in self.cores:
-            if core.state == CoreState.PAUSED:
-                core.state = CoreState.RUNNING
-        while any(c.state == CoreState.RUNNING for c in self.cores):
-            has_non_debug = False
+        try:
             for core in self.cores:
-                if core.state != CoreState.RUNNING:
-                    continue
-                if core.pc >= len(self.program):
-                    core.state = CoreState.STOPPED
-                    continue
-                instr = self.program[core.pc]
-                if self.prints:
-                    self.print_step(instr, core)
-                core.pc += 1
-                self.step(instr, core)
-                if any(name != "debug" for name in instr.keys()):
-                    has_non_debug = True
-            if has_non_debug:
-                self.cycle += 1
+                if core.state == CoreState.PAUSED:
+                    core.state = CoreState.RUNNING
+            while any(c.state == CoreState.RUNNING for c in self.cores):
+                has_non_debug = False
+                for core in self.cores:
+                    if core.state != CoreState.RUNNING:
+                        continue
+                    if core.pc >= len(self.program):
+                        core.state = CoreState.STOPPED
+                        continue
+                    instr = self.program[core.pc]
+                    if self.prints:
+                        self.print_step(instr, core)
+                    core.pc += 1
+                    self.step(instr, core)
+                    if any(name != "debug" for name in instr.keys()):
+                        has_non_debug = True
+                if has_non_debug:
+                    self.cycle += 1
+        finally:
+            self.close_trace()
 
     def alu(self, core, op, dest, a1, a2):
         a1 = core.scratch[a1]
@@ -397,9 +402,13 @@ class Machine:
         del self.mem_write
 
     def __del__(self):
+        self.close_trace()
+
+    def close_trace(self):
         if self.trace is not None:
             self.trace.write("]")
             self.trace.close()
+            self.trace = None
 
 
 @dataclass
@@ -412,9 +421,10 @@ class Tree:
     values: list[int]
 
     @staticmethod
-    def generate(height: int):
+    def generate(height: int, seed: int | None = None):
         n_nodes = 2 ** (height + 1) - 1
-        values = [random.randint(0, 2**30 - 1) for _ in range(n_nodes)]
+        rng = random.Random(seed) if seed is not None else random
+        values = [rng.randint(0, 2**30 - 1) for _ in range(n_nodes)]
         return Tree(height, values)
 
 
@@ -430,9 +440,10 @@ class Input:
     rounds: int
 
     @staticmethod
-    def generate(forest: Tree, batch_size: int, rounds: int):
+    def generate(forest: Tree, batch_size: int, rounds: int, seed: int | None = None):
+        rng = random.Random(seed) if seed is not None else random
         indices = [0 for _ in range(batch_size)]
-        values = [random.randint(0, 2**30 - 1) for _ in range(batch_size)]
+        values = [rng.randint(0, 2**30 - 1) for _ in range(batch_size)]
         return Input(indices, values, rounds)
 
 
