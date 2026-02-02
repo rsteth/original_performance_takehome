@@ -230,8 +230,6 @@ class KernelBuilder:
         self.add("debug", ("comment", "Starting loop"))
 
         # Scalar scratch registers
-        tmp_idx = self.alloc_scratch("tmp_idx")
-        tmp_val = self.alloc_scratch("tmp_val")
         tmp_node_val = self.alloc_scratch("tmp_node_val")
         tmp_miss_val = self.alloc_scratch("tmp_miss_val")
         tmp_addr = self.alloc_scratch("tmp_addr")
@@ -240,53 +238,69 @@ class KernelBuilder:
         cache_tag = self.alloc_scratch("cache_tag")
         cache_val = self.alloc_scratch("cache_val")
 
-        vec_idx = self.alloc_scratch("vec_idx", VLEN)
-        vec_val = self.alloc_scratch("vec_val", VLEN)
         vec_node_val = self.alloc_scratch("vec_node_val", VLEN)
         vec_addr = self.alloc_scratch("vec_addr", VLEN)
         vec_tmp1 = self.alloc_scratch("vec_tmp1", VLEN)
         vec_tmp2 = self.alloc_scratch("vec_tmp2", VLEN)
-        vec_idx2 = self.alloc_scratch("vec_idx2", VLEN)
-        vec_val2 = self.alloc_scratch("vec_val2", VLEN)
         vec_node_val2 = self.alloc_scratch("vec_node_val2", VLEN)
         vec_addr2 = self.alloc_scratch("vec_addr2", VLEN)
         vec_tmp1b = self.alloc_scratch("vec_tmp1b", VLEN)
         vec_tmp2b = self.alloc_scratch("vec_tmp2b", VLEN)
+        vec_node_val3 = self.alloc_scratch("vec_node_val3", VLEN)
+        vec_addr3 = self.alloc_scratch("vec_addr3", VLEN)
+        vec_tmp1c = self.alloc_scratch("vec_tmp1c", VLEN)
+        vec_tmp2c = self.alloc_scratch("vec_tmp2c", VLEN)
+        vec_node_val4 = self.alloc_scratch("vec_node_val4", VLEN)
+        vec_addr4 = self.alloc_scratch("vec_addr4", VLEN)
+        vec_tmp1d = self.alloc_scratch("vec_tmp1d", VLEN)
+        vec_tmp2d = self.alloc_scratch("vec_tmp2d", VLEN)
+
+        idx_buf = self.alloc_scratch("idx_buf", batch_size)
+        val_buf = self.alloc_scratch("val_buf", batch_size)
 
         self.emit("alu", ("+", cache_tag, cache_invalid, zero_const))
         self.emit("alu", ("+", cache_val, zero_const, zero_const))
 
+        vec_end = batch_size - (batch_size % VLEN)
+        vec_unroll = 4 * VLEN
+        vec_unroll_end = vec_end - (vec_end % vec_unroll)
+
+        for i in range(0, vec_end, VLEN):
+            i_const = self.scratch_const(i)
+            idx_addr = idx_buf + i
+            val_addr = val_buf + i
+            self.emit("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const))
+            self.emit("load", ("vload", idx_addr, tmp_addr))
+            self.emit("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const))
+            self.emit("load", ("vload", val_addr, tmp_addr))
+
+        for i in range(vec_end, batch_size):
+            i_const = self.scratch_const(i)
+            idx_addr = idx_buf + i
+            val_addr = val_buf + i
+            self.emit("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const))
+            self.emit("load", ("load", idx_addr, tmp_addr))
+            self.emit("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const))
+            self.emit("load", ("load", val_addr, tmp_addr))
+
         for round in range(rounds):
-            vec_end = batch_size - (batch_size % VLEN)
-            vec_unroll = 2 * VLEN
-            vec_unroll_end = vec_end - (vec_end % vec_unroll)
             for i in range(0, vec_unroll_end, vec_unroll):
-                i_const = self.scratch_const(i)
-                i2_const = self.scratch_const(i + VLEN)
-                # idx = mem[inp_indices_p + i]
-                self.emit("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const))
-                self.emit_bundle(
-                    {
-                        "load": [("vload", vec_idx, tmp_addr)],
-                        "alu": [("+", tmp_addr2, self.scratch["inp_indices_p"], i2_const)],
-                    }
-                )
-                self.emit("load", ("vload", vec_idx2, tmp_addr2))
-                # val = mem[inp_values_p + i]
-                self.emit("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const))
-                self.emit_bundle(
-                    {
-                        "load": [("vload", vec_val, tmp_addr)],
-                        "alu": [("+", tmp_addr2, self.scratch["inp_values_p"], i2_const)],
-                    }
-                )
-                self.emit("load", ("vload", vec_val2, tmp_addr2))
-                # node_val = mem[forest_values_p + idx] (gather)
+                idx_addr = idx_buf + i
+                idx_addr2 = idx_buf + i + VLEN
+                idx_addr3 = idx_buf + i + 2 * VLEN
+                idx_addr4 = idx_buf + i + 3 * VLEN
+                val_addr = val_buf + i
+                val_addr2 = val_buf + i + VLEN
+                val_addr3 = val_buf + i + 2 * VLEN
+                val_addr4 = val_buf + i + 3 * VLEN
+
                 self.emit_bundle(
                     {
                         "valu": [
-                            ("+", vec_addr, vec_idx, vec_forest_values),
-                            ("+", vec_addr2, vec_idx2, vec_forest_values),
+                            ("+", vec_addr, idx_addr, vec_forest_values),
+                            ("+", vec_addr2, idx_addr2, vec_forest_values),
+                            ("+", vec_addr3, idx_addr3, vec_forest_values),
+                            ("+", vec_addr4, idx_addr4, vec_forest_values),
                         ]
                     }
                 )
@@ -299,32 +313,53 @@ class KernelBuilder:
                             ]
                         }
                     )
-                # val = myhash(val ^ node_val)
+                    self.emit_bundle(
+                        {
+                            "load": [
+                                ("load_offset", vec_node_val3, vec_addr3, lane),
+                                ("load_offset", vec_node_val4, vec_addr4, lane),
+                            ]
+                        }
+                    )
                 self.emit_bundle(
                     {
                         "valu": [
-                            ("^", vec_val, vec_val, vec_node_val),
-                            ("^", vec_val2, vec_val2, vec_node_val2),
+                            ("^", val_addr, val_addr, vec_node_val),
+                            ("^", val_addr2, val_addr2, vec_node_val2),
+                            ("^", val_addr3, val_addr3, vec_node_val3),
+                            ("^", val_addr4, val_addr4, vec_node_val4),
                         ]
                     }
                 )
                 self.instrs.extend(
                     self.build_hash_vec_pair(
-                        vec_val,
+                        val_addr,
                         vec_tmp1,
                         vec_tmp2,
-                        vec_val2,
+                        val_addr2,
                         vec_tmp1b,
                         vec_tmp2b,
                         hash_consts,
                     )
                 )
-                # idx = 2*idx + (1 if val % 2 == 0 else 2)
+                self.instrs.extend(
+                    self.build_hash_vec_pair(
+                        val_addr3,
+                        vec_tmp1c,
+                        vec_tmp2c,
+                        val_addr4,
+                        vec_tmp1d,
+                        vec_tmp2d,
+                        hash_consts,
+                    )
+                )
                 self.emit_bundle(
                     {
                         "valu": [
-                            ("&", vec_tmp1, vec_val, vec_one),
-                            ("&", vec_tmp1b, vec_val2, vec_one),
+                            ("&", vec_tmp1, val_addr, vec_one),
+                            ("&", vec_tmp1b, val_addr2, vec_one),
+                            ("&", vec_tmp1c, val_addr3, vec_one),
+                            ("&", vec_tmp1d, val_addr4, vec_one),
                         ]
                     }
                 )
@@ -333,67 +368,114 @@ class KernelBuilder:
                         "valu": [
                             ("==", vec_tmp1, vec_tmp1, vec_zero),
                             ("==", vec_tmp1b, vec_tmp1b, vec_zero),
+                            ("==", vec_tmp1c, vec_tmp1c, vec_zero),
+                            ("==", vec_tmp1d, vec_tmp1d, vec_zero),
                         ]
                     }
                 )
                 self.emit("flow", ("vselect", vec_tmp2, vec_tmp1, vec_one, vec_two))
                 self.emit("flow", ("vselect", vec_tmp2b, vec_tmp1b, vec_one, vec_two))
+                self.emit("flow", ("vselect", vec_tmp2c, vec_tmp1c, vec_one, vec_two))
+                self.emit("flow", ("vselect", vec_tmp2d, vec_tmp1d, vec_one, vec_two))
                 self.emit_bundle(
                     {
                         "valu": [
-                            ("*", vec_idx, vec_idx, vec_two),
-                            ("*", vec_idx2, vec_idx2, vec_two),
+                            ("*", idx_addr, idx_addr, vec_two),
+                            ("*", idx_addr2, idx_addr2, vec_two),
+                            ("*", idx_addr3, idx_addr3, vec_two),
+                            ("*", idx_addr4, idx_addr4, vec_two),
                         ]
                     }
                 )
                 self.emit_bundle(
                     {
                         "valu": [
-                            ("+", vec_idx, vec_idx, vec_tmp2),
-                            ("+", vec_idx2, vec_idx2, vec_tmp2b),
+                            ("+", idx_addr, idx_addr, vec_tmp2),
+                            ("+", idx_addr2, idx_addr2, vec_tmp2b),
+                            ("+", idx_addr3, idx_addr3, vec_tmp2c),
+                            ("+", idx_addr4, idx_addr4, vec_tmp2d),
                         ]
                     }
                 )
-                # idx = 0 if idx >= n_nodes else idx
                 self.emit_bundle(
                     {
                         "valu": [
-                            ("<", vec_tmp1, vec_idx, vec_n_nodes),
-                            ("<", vec_tmp1b, vec_idx2, vec_n_nodes),
+                            ("<", vec_tmp1, idx_addr, vec_n_nodes),
+                            ("<", vec_tmp1b, idx_addr2, vec_n_nodes),
+                            ("<", vec_tmp1c, idx_addr3, vec_n_nodes),
+                            ("<", vec_tmp1d, idx_addr4, vec_n_nodes),
                         ]
                     }
                 )
-                self.emit("flow", ("vselect", vec_idx, vec_tmp1, vec_idx, vec_zero))
-                self.emit("flow", ("vselect", vec_idx2, vec_tmp1b, vec_idx2, vec_zero))
-                # mem[inp_indices_p + i] = idx
-                self.emit("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const))
+                self.emit("flow", ("vselect", idx_addr, vec_tmp1, idx_addr, vec_zero))
+                self.emit("flow", ("vselect", idx_addr2, vec_tmp1b, idx_addr2, vec_zero))
+                self.emit("flow", ("vselect", idx_addr3, vec_tmp1c, idx_addr3, vec_zero))
+                self.emit("flow", ("vselect", idx_addr4, vec_tmp1d, idx_addr4, vec_zero))
+                self.emit("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], self.scratch_const(i)))
                 self.emit_bundle(
                     {
-                        "store": [("vstore", tmp_addr, vec_idx)],
-                        "alu": [("+", tmp_addr2, self.scratch["inp_indices_p"], i2_const)],
+                        "store": [("vstore", tmp_addr, idx_addr)],
+                        "alu": [
+                            (
+                                "+",
+                                tmp_addr2,
+                                self.scratch["inp_indices_p"],
+                                self.scratch_const(i + VLEN),
+                            )
+                        ],
                     }
                 )
-                self.emit("store", ("vstore", tmp_addr2, vec_idx2))
-                # mem[inp_values_p + i] = val
-                self.emit("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const))
+                self.emit("store", ("vstore", tmp_addr2, idx_addr2))
+                self.emit("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], self.scratch_const(i + 2 * VLEN)))
                 self.emit_bundle(
                     {
-                        "store": [("vstore", tmp_addr, vec_val)],
-                        "alu": [("+", tmp_addr2, self.scratch["inp_values_p"], i2_const)],
+                        "store": [("vstore", tmp_addr, idx_addr3)],
+                        "alu": [
+                            (
+                                "+",
+                                tmp_addr2,
+                                self.scratch["inp_indices_p"],
+                                self.scratch_const(i + 3 * VLEN),
+                            )
+                        ],
                     }
                 )
-                self.emit("store", ("vstore", tmp_addr2, vec_val2))
+                self.emit("store", ("vstore", tmp_addr2, idx_addr4))
+                self.emit("alu", ("+", tmp_addr, self.scratch["inp_values_p"], self.scratch_const(i)))
+                self.emit_bundle(
+                    {
+                        "store": [("vstore", tmp_addr, val_addr)],
+                        "alu": [
+                            (
+                                "+",
+                                tmp_addr2,
+                                self.scratch["inp_values_p"],
+                                self.scratch_const(i + VLEN),
+                            )
+                        ],
+                    }
+                )
+                self.emit("store", ("vstore", tmp_addr2, val_addr2))
+                self.emit("alu", ("+", tmp_addr, self.scratch["inp_values_p"], self.scratch_const(i + 2 * VLEN)))
+                self.emit_bundle(
+                    {
+                        "store": [("vstore", tmp_addr, val_addr3)],
+                        "alu": [
+                            (
+                                "+",
+                                tmp_addr2,
+                                self.scratch["inp_values_p"],
+                                self.scratch_const(i + 3 * VLEN),
+                            )
+                        ],
+                    }
+                )
+                self.emit("store", ("vstore", tmp_addr2, val_addr4))
 
             for i in range(vec_unroll_end, vec_end, VLEN):
-                i_const = self.scratch_const(i)
-                # idx = mem[inp_indices_p + i]
-                self.emit("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const))
-                self.emit("load", ("vload", vec_idx, tmp_addr))
-                # val = mem[inp_values_p + i]
-                self.emit("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const))
-                self.emit("load", ("vload", vec_val, tmp_addr))
-                # node_val = mem[forest_values_p + idx] (gather)
-                self.emit("valu", ("+", vec_addr, vec_idx, vec_forest_values))
+                idx_addr = idx_buf + i
+                val_addr = val_buf + i
+                self.emit("valu", ("+", vec_addr, idx_addr, vec_forest_values))
                 for lane in range(0, VLEN, 2):
                     self.emit_group(
                         "load",
@@ -402,64 +484,49 @@ class KernelBuilder:
                             ("load_offset", vec_node_val, vec_addr, lane + 1),
                         ],
                     )
-                # val = myhash(val ^ node_val)
-                self.emit("valu", ("^", vec_val, vec_val, vec_node_val))
+                self.emit("valu", ("^", val_addr, val_addr, vec_node_val))
                 self.instrs.extend(
-                    self.build_hash_vec(vec_val, vec_tmp1, vec_tmp2, hash_consts)
+                    self.build_hash_vec(val_addr, vec_tmp1, vec_tmp2, hash_consts)
                 )
-                # idx = 2*idx + (1 if val % 2 == 0 else 2)
-                self.emit("valu", ("&", vec_tmp1, vec_val, vec_one))
+                self.emit("valu", ("&", vec_tmp1, val_addr, vec_one))
                 self.emit("valu", ("==", vec_tmp1, vec_tmp1, vec_zero))
                 self.emit("flow", ("vselect", vec_tmp2, vec_tmp1, vec_one, vec_two))
-                self.emit("valu", ("*", vec_idx, vec_idx, vec_two))
-                self.emit("valu", ("+", vec_idx, vec_idx, vec_tmp2))
-                # idx = 0 if idx >= n_nodes else idx
-                self.emit("valu", ("<", vec_tmp1, vec_idx, vec_n_nodes))
-                self.emit("flow", ("vselect", vec_idx, vec_tmp1, vec_idx, vec_zero))
-                # mem[inp_indices_p + i] = idx
-                self.emit("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const))
-                self.emit("store", ("vstore", tmp_addr, vec_idx))
-                # mem[inp_values_p + i] = val
-                self.emit("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const))
-                self.emit("store", ("vstore", tmp_addr, vec_val))
+                self.emit("valu", ("*", idx_addr, idx_addr, vec_two))
+                self.emit("valu", ("+", idx_addr, idx_addr, vec_tmp2))
+                self.emit("valu", ("<", vec_tmp1, idx_addr, vec_n_nodes))
+                self.emit("flow", ("vselect", idx_addr, vec_tmp1, idx_addr, vec_zero))
+                self.emit("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], self.scratch_const(i)))
+                self.emit("store", ("vstore", tmp_addr, idx_addr))
+                self.emit("alu", ("+", tmp_addr, self.scratch["inp_values_p"], self.scratch_const(i)))
+                self.emit("store", ("vstore", tmp_addr, val_addr))
 
             for i in range(vec_end, batch_size):
                 i_const = self.scratch_const(i)
-                # idx = mem[inp_indices_p + i]
-                self.emit("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const))
-                self.emit("load", ("load", tmp_idx, tmp_addr))
-                # val = mem[inp_values_p + i]
-                self.emit("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const))
-                self.emit("load", ("load", tmp_val, tmp_addr))
-                # node_val = mem[forest_values_p + idx] (cached)
-                self.emit("alu", ("==", tmp1, cache_tag, tmp_idx))
+                idx_addr = idx_buf + i
+                val_addr = val_buf + i
+                self.emit("alu", ("==", tmp1, cache_tag, idx_addr))
                 self.emit(
-                    "alu", ("+", tmp_addr, self.scratch["forest_values_p"], tmp_idx)
+                    "alu", ("+", tmp_addr, self.scratch["forest_values_p"], idx_addr)
                 )
                 self.emit("load", ("load", tmp_miss_val, tmp_addr))
                 self.emit(
                     "flow", ("select", tmp_node_val, tmp1, cache_val, tmp_miss_val)
                 )
-                self.emit("alu", ("+", cache_tag, tmp_idx, zero_const))
+                self.emit("alu", ("+", cache_tag, idx_addr, zero_const))
                 self.emit("alu", ("+", cache_val, tmp_node_val, zero_const))
-                # val = myhash(val ^ node_val)
-                self.emit("alu", ("^", tmp_val, tmp_val, tmp_node_val))
-                self.instrs.extend(self.build_hash(tmp_val, tmp1, tmp2))
-                # idx = 2*idx + (1 if val % 2 == 0 else 2)
-                self.emit("alu", ("&", tmp1, tmp_val, parity_mask))
+                self.emit("alu", ("^", val_addr, val_addr, tmp_node_val))
+                self.instrs.extend(self.build_hash(val_addr, tmp1, tmp2))
+                self.emit("alu", ("&", tmp1, val_addr, parity_mask))
                 self.emit("alu", ("==", tmp1, tmp1, zero_const))
                 self.emit("flow", ("select", tmp3, tmp1, one_const, two_const))
-                self.emit("alu", ("*", tmp_idx, tmp_idx, two_const))
-                self.emit("alu", ("+", tmp_idx, tmp_idx, tmp3))
-                # idx = 0 if idx >= n_nodes else idx
-                self.emit("alu", ("<", tmp1, tmp_idx, self.scratch["n_nodes"]))
-                self.emit("flow", ("select", tmp_idx, tmp1, tmp_idx, zero_const))
-                # mem[inp_indices_p + i] = idx
+                self.emit("alu", ("*", idx_addr, idx_addr, two_const))
+                self.emit("alu", ("+", idx_addr, idx_addr, tmp3))
+                self.emit("alu", ("<", tmp1, idx_addr, self.scratch["n_nodes"]))
+                self.emit("flow", ("select", idx_addr, tmp1, idx_addr, zero_const))
                 self.emit("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const))
-                self.emit("store", ("store", tmp_addr, tmp_idx))
-                # mem[inp_values_p + i] = val
+                self.emit("store", ("store", tmp_addr, idx_addr))
                 self.emit("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const))
-                self.emit("store", ("store", tmp_addr, tmp_val))
+                self.emit("store", ("store", tmp_addr, val_addr))
         # Required to match with the yield in reference_kernel2
         self.instrs.append({"flow": [("pause",)]})
 
