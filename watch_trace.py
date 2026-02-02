@@ -9,6 +9,7 @@ import urllib.request
 class MyHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         try:
+            trace_path = os.environ.get("TRACE_PATH", "trace.json")
             # Serve a string constant at the index
             if self.path == "/":
                 self.send_response(200)
@@ -22,13 +23,13 @@ class MyHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
                 self.end_headers()
-                with open("trace.json", "rb") as file:
+                with open(trace_path, "rb") as file:
                     while chunk := file.read(8192):
                         self.wfile.write(chunk)
 
             # Serve the file modification time of 'trace.json' at '/mtime'
             elif self.path == "/mtime":
-                mtime = os.path.getmtime("trace.json")
+                mtime = os.path.getmtime(trace_path)
                 last_modified_date = datetime.fromtimestamp(mtime).strftime(
                     "%Y-%m-%d %H:%M:%S"
                 )

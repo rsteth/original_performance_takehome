@@ -49,10 +49,25 @@ class KernelBuilder:
         return DebugInfo(scratch_map=self.scratch_debug)
 
     def build(self, slots: list[tuple[Engine, tuple]], vliw: bool = False):
-        # Simple slot packing that just uses one slot per instruction bundle
+        if not vliw:
+            # Simple slot packing that just uses one slot per instruction bundle
+            return [{engine: [slot]} for engine, slot in slots]
+
         instrs = []
+        current = {}
+        counts = defaultdict(int)
+
         for engine, slot in slots:
-            instrs.append({engine: [slot]})
+            limit = SLOT_LIMITS[engine]
+            if counts[engine] >= limit:
+                instrs.append(current)
+                current = {}
+                counts = defaultdict(int)
+            current.setdefault(engine, []).append(slot)
+            counts[engine] += 1
+
+        if current:
+            instrs.append(current)
         return instrs
 
     def add(self, engine, slot):
@@ -168,7 +183,7 @@ class KernelBuilder:
                 body.append(("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const)))
                 body.append(("store", ("store", tmp_addr, tmp_val)))
 
-        body_instrs = self.build(body)
+        body_instrs = self.build(body, vliw=True)
         self.instrs.extend(body_instrs)
         # Required to match with the yield in reference_kernel2
         self.instrs.append({"flow": [("pause",)]})

@@ -37,3 +37,44 @@ python tests/submission_tests.py
 ```
 
 An example of this kind of hack is a model noticing that `problem.py` has multicore support, implementing multicore as an optimization, noticing there's no speedup and "debugging" that `N_CORES = 1` and "fixing" the core count so they get a speedup. Multicore is disabled intentionally in this version.
+
+## Simulator ISA quick reference
+
+The simulator in `problem.py` models a VLIW + SIMD architecture. Each instruction bundle
+can include multiple slots per engine, up to the per-cycle `SLOT_LIMITS`:
+
+| Engine | Purpose | Notes |
+| --- | --- | --- |
+| `alu` | Scalar arithmetic/logic | Operates on scratch addresses. |
+| `valu` | Vector arithmetic/logic | Operates on `VLEN` contiguous scratch lanes. |
+| `load` | Loads/constants | `load`, `vload`, `const`. |
+| `store` | Stores | `store`, `vstore`. |
+| `flow` | Control flow | `select`, `jump`, `pause`, etc. |
+
+Effects of all slots in a bundle are committed at the end of the cycle, so loads read
+old values and writes are visible in the next cycle.
+
+## Memory layout quick reference
+
+`build_mem_image` constructs a flat memory image used by the kernel. The header includes:
+
+```
+mem[0] = rounds
+mem[1] = n_nodes
+mem[2] = batch_size
+mem[3] = forest_height
+mem[4] = forest_values_p
+mem[5] = inp_indices_p
+mem[6] = inp_values_p
+mem[7] = extra_room (scratch space beyond input arrays)
+```
+
+The tree values live at `mem[forest_values_p:...]`, followed by input indices, then input
+values. This layout is consumed by `reference_kernel2` and by `KernelBuilder.build_kernel`.
+
+## Tracing tips
+
+Tracing writes out `trace.json` in Chrome Trace Event Format. The simulator exposes
+a `trace_path` argument, so you can direct traces to a different file name if desired,
+then use `watch_trace.py` (optionally with `TRACE_PATH=/path/to/trace.json`) to view
+them in Perfetto.
