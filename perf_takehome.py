@@ -503,6 +503,36 @@ class KernelBuilder:
                     "alu",
                     ("+", debug_val_ptr, self.scratch["inp_values_p"], zero_const),
                 )
+            if vec_unroll_end:
+                idx_addr0 = idx_buf
+                idx_addr1 = idx_buf + VLEN
+                self.emit_bundle(
+                    {
+                        "valu": [
+                            ("+", vec_addr_prefetch, idx_addr0, vec_forest_values),
+                            ("+", vec_addr_prefetch2, idx_addr1, vec_forest_values),
+                        ]
+                    }
+                )
+                for lane in range(VLEN):
+                    self.emit_bundle(
+                        {
+                            "load": [
+                                (
+                                    "load_offset",
+                                    vec_node_val_prefetch,
+                                    vec_addr_prefetch,
+                                    lane,
+                                ),
+                                (
+                                    "load_offset",
+                                    vec_node_val_prefetch2,
+                                    vec_addr_prefetch2,
+                                    lane,
+                                ),
+                            ]
+                        }
+                    )
             for i in range(0, vec_unroll_end, vec_unroll):
                 idx_addr = idx_buf + i
                 idx_addr2 = idx_buf + i + VLEN
@@ -522,79 +552,31 @@ class KernelBuilder:
                 val_addr8 = val_buf + i + 7 * VLEN
 
                 has_prefetch = i + vec_unroll < vec_unroll_end
-                if i == 0:
+                self.emit_bundle(
+                    {
+                        "valu": [
+                            ("+", vec_addr3, idx_addr3, vec_forest_values),
+                            ("+", vec_addr4, idx_addr4, vec_forest_values),
+                            ("+", vec_addr5, idx_addr5, vec_forest_values),
+                            ("+", vec_addr6, idx_addr6, vec_forest_values),
+                            ("+", vec_addr7, idx_addr7, vec_forest_values),
+                            ("+", vec_addr8, idx_addr8, vec_forest_values),
+                        ]
+                    }
+                )
+                if has_prefetch:
+                    idx_addr_next = idx_buf + i + vec_unroll
+                    idx_addr_next2 = idx_buf + i + vec_unroll + VLEN
                     self.emit_bundle(
                         {
                             "valu": [
-                                ("+", vec_addr, idx_addr, vec_forest_values),
-                                ("+", vec_addr2, idx_addr2, vec_forest_values),
-                                ("+", vec_addr3, idx_addr3, vec_forest_values),
-                                ("+", vec_addr4, idx_addr4, vec_forest_values),
-                                ("+", vec_addr5, idx_addr5, vec_forest_values),
-                                ("+", vec_addr6, idx_addr6, vec_forest_values),
+                                ("+", vec_addr_prefetch, idx_addr_next, vec_forest_values),
+                                ("+", vec_addr_prefetch2, idx_addr_next2, vec_forest_values),
                             ]
                         }
                     )
-                    self.emit_bundle(
-                        {
-                            "valu": [
-                                ("+", vec_addr7, idx_addr7, vec_forest_values),
-                                ("+", vec_addr8, idx_addr8, vec_forest_values),
-                            ]
-                        }
-                    )
-                    if has_prefetch:
-                        idx_addr_next = idx_buf + i + vec_unroll
-                        idx_addr_next2 = idx_buf + i + vec_unroll + VLEN
-                        self.emit_bundle(
-                            {
-                                "valu": [
-                                    ("+", vec_addr_prefetch, idx_addr_next, vec_forest_values),
-                                    ("+", vec_addr_prefetch2, idx_addr_next2, vec_forest_values),
-                                ]
-                            }
-                        )
-                    for lane in range(VLEN):
-                        self.emit_bundle(
-                            {
-                                "load": [
-                                    ("load_offset", vec_node_val, vec_addr, lane),
-                                    ("load_offset", vec_node_val2, vec_addr2, lane),
-                                ]
-                            }
-                        )
-                else:
-                    self.emit_bundle(
-                        {
-                            "valu": [
-                                ("+", vec_addr3, idx_addr3, vec_forest_values),
-                                ("+", vec_addr4, idx_addr4, vec_forest_values),
-                                ("+", vec_addr5, idx_addr5, vec_forest_values),
-                                ("+", vec_addr6, idx_addr6, vec_forest_values),
-                            ]
-                        }
-                    )
-                    self.emit_bundle(
-                        {
-                            "valu": [
-                                ("+", vec_addr7, idx_addr7, vec_forest_values),
-                                ("+", vec_addr8, idx_addr8, vec_forest_values),
-                            ]
-                        }
-                    )
-                    if has_prefetch:
-                        idx_addr_next = idx_buf + i + vec_unroll
-                        idx_addr_next2 = idx_buf + i + vec_unroll + VLEN
-                        self.emit_bundle(
-                            {
-                                "valu": [
-                                    ("+", vec_addr_prefetch, idx_addr_next, vec_forest_values),
-                                    ("+", vec_addr_prefetch2, idx_addr_next2, vec_forest_values),
-                                ]
-                            }
-                        )
-                node_val_a = vec_node_val if i == 0 else vec_node_val_prefetch
-                node_val_b = vec_node_val2 if i == 0 else vec_node_val_prefetch2
+                node_val_a = vec_node_val_prefetch
+                node_val_b = vec_node_val_prefetch2
                 if use_cache:
                     self.emit_bundle(
                         {
