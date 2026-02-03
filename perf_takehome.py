@@ -460,7 +460,32 @@ class KernelBuilder:
         if fast_mode and tail_len:
             idx_addr = idx_buf + vec_end
             val_addr = val_buf + vec_end
-            for lane in range(tail_len):
+            lane = 0
+            while lane + 1 < tail_len:
+                self.emit_bundle(
+                    {
+                        "load": [
+                            ("load_offset", idx_addr + lane, idx_load_ptr, 0),
+                            ("load_offset", idx_addr + lane + 1, idx_load_ptr, 1),
+                        ],
+                        "alu": [
+                            ("+", idx_load_ptr, idx_load_ptr, two_const),
+                        ],
+                    }
+                )
+                self.emit_bundle(
+                    {
+                        "load": [
+                            ("load_offset", val_addr + lane, val_load_ptr, 0),
+                            ("load_offset", val_addr + lane + 1, val_load_ptr, 1),
+                        ],
+                        "alu": [
+                            ("+", val_load_ptr, val_load_ptr, two_const),
+                        ],
+                    }
+                )
+                lane += 2
+            if lane < tail_len:
                 self.emit_bundle(
                     {
                         "load": [
