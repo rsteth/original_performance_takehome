@@ -301,6 +301,11 @@ class KernelBuilder:
         vec_cache_tag8 = self.alloc_scratch("vec_cache_tag8", VLEN)
         vec_cache_val8 = self.alloc_scratch("vec_cache_val8", VLEN)
 
+        vec_node_val_prefetch = self.alloc_scratch("vec_node_val_prefetch", VLEN)
+        vec_node_val_prefetch2 = self.alloc_scratch("vec_node_val_prefetch2", VLEN)
+        vec_addr_prefetch = self.alloc_scratch("vec_addr_prefetch", VLEN)
+        vec_addr_prefetch2 = self.alloc_scratch("vec_addr_prefetch2", VLEN)
+
         idx_buf = self.alloc_scratch("idx_buf", batch_size)
         val_buf = self.alloc_scratch("val_buf", batch_size)
 
@@ -455,7 +460,32 @@ class KernelBuilder:
         if fast_mode and tail_len:
             idx_addr = idx_buf + vec_end
             val_addr = val_buf + vec_end
-            for lane in range(tail_len):
+            lane = 0
+            while lane + 1 < tail_len:
+                self.emit_bundle(
+                    {
+                        "load": [
+                            ("load_offset", idx_addr + lane, idx_load_ptr, 0),
+                            ("load_offset", idx_addr + lane + 1, idx_load_ptr, 1),
+                        ],
+                        "alu": [
+                            ("+", idx_load_ptr, idx_load_ptr, two_const),
+                        ],
+                    }
+                )
+                self.emit_bundle(
+                    {
+                        "load": [
+                            ("load_offset", val_addr + lane, val_load_ptr, 0),
+                            ("load_offset", val_addr + lane + 1, val_load_ptr, 1),
+                        ],
+                        "alu": [
+                            ("+", val_load_ptr, val_load_ptr, two_const),
+                        ],
+                    }
+                )
+                lane += 2
+            if lane < tail_len:
                 self.emit_bundle(
                     {
                         "load": [
@@ -498,6 +528,36 @@ class KernelBuilder:
                     "alu",
                     ("+", debug_val_ptr, self.scratch["inp_values_p"], zero_const),
                 )
+            if vec_unroll_end:
+                idx_addr0 = idx_buf
+                idx_addr1 = idx_buf + VLEN
+                self.emit_bundle(
+                    {
+                        "valu": [
+                            ("+", vec_addr_prefetch, idx_addr0, vec_forest_values),
+                            ("+", vec_addr_prefetch2, idx_addr1, vec_forest_values),
+                        ]
+                    }
+                )
+                for lane in range(VLEN):
+                    self.emit_bundle(
+                        {
+                            "load": [
+                                (
+                                    "load_offset",
+                                    vec_node_val_prefetch,
+                                    vec_addr_prefetch,
+                                    lane,
+                                ),
+                                (
+                                    "load_offset",
+                                    vec_node_val_prefetch2,
+                                    vec_addr_prefetch2,
+                                    lane,
+                                ),
+                            ]
+                        }
+                    )
             for i in range(0, vec_unroll_end, vec_unroll):
                 idx_addr = idx_buf + i
                 idx_addr2 = idx_buf + i + VLEN
@@ -516,35 +576,32 @@ class KernelBuilder:
                 val_addr7 = val_buf + i + 6 * VLEN
                 val_addr8 = val_buf + i + 7 * VLEN
 
+                has_prefetch = i + vec_unroll < vec_unroll_end
                 self.emit_bundle(
                     {
                         "valu": [
-                            ("+", vec_addr, idx_addr, vec_forest_values),
-                            ("+", vec_addr2, idx_addr2, vec_forest_values),
                             ("+", vec_addr3, idx_addr3, vec_forest_values),
                             ("+", vec_addr4, idx_addr4, vec_forest_values),
                             ("+", vec_addr5, idx_addr5, vec_forest_values),
                             ("+", vec_addr6, idx_addr6, vec_forest_values),
-                        ]
-                    }
-                )
-                self.emit_bundle(
-                    {
-                        "valu": [
                             ("+", vec_addr7, idx_addr7, vec_forest_values),
                             ("+", vec_addr8, idx_addr8, vec_forest_values),
                         ]
                     }
                 )
-                for lane in range(VLEN):
+                if has_prefetch:
+                    idx_addr_next = idx_buf + i + vec_unroll
+                    idx_addr_next2 = idx_buf + i + vec_unroll + VLEN
                     self.emit_bundle(
                         {
-                            "load": [
-                                ("load_offset", vec_node_val, vec_addr, lane),
-                                ("load_offset", vec_node_val2, vec_addr2, lane),
+                            "valu": [
+                                ("+", vec_addr_prefetch, idx_addr_next, vec_forest_values),
+                                ("+", vec_addr_prefetch2, idx_addr_next2, vec_forest_values),
                             ]
                         }
                     )
+                node_val_a = vec_node_val_prefetch
+                node_val_b = vec_node_val_prefetch2
                 if use_cache:
                     self.emit_bundle(
                         {
@@ -561,8 +618,8 @@ class KernelBuilder:
                             "valu": [
                                 ("*", vec_tmp1, vec_tmp1, vec_cache_val),
                                 ("*", vec_tmp1b, vec_tmp1b, vec_cache_val2),
-                                ("*", vec_tmp2, vec_tmp2, vec_node_val),
-                                ("*", vec_tmp2b, vec_tmp2b, vec_node_val2),
+                                ("*", vec_tmp2, vec_tmp2, node_val_a),
+                                ("*", vec_tmp2b, vec_tmp2b, node_val_b),
                             ]
                         }
                     )
@@ -578,17 +635,17 @@ class KernelBuilder:
                         {
                             "valu": [
                                 ("+", vec_cache_tag, idx_addr, vec_zero),
-                                ("+", vec_cache_val, vec_node_val, vec_zero),
+                                ("+", vec_cache_val, node_val_a, vec_zero),
                                 ("+", vec_cache_tag2, idx_addr2, vec_zero),
-                                ("+", vec_cache_val2, vec_node_val2, vec_zero),
+                                ("+", vec_cache_val2, node_val_b, vec_zero),
                             ]
                         }
                     )
                     self.emit_bundle(
                         {
                             "valu": [
-                                ("^", val_addr, val_addr, vec_node_val),
-                                ("^", val_addr2, val_addr2, vec_node_val2),
+                                ("^", val_addr, val_addr, node_val_a),
+                                ("^", val_addr2, val_addr2, node_val_b),
                             ]
                         }
                     )
@@ -596,8 +653,8 @@ class KernelBuilder:
                     self.emit_bundle(
                         {
                             "valu": [
-                                ("^", val_addr, val_addr, vec_node_val),
-                                ("^", val_addr2, val_addr2, vec_node_val2),
+                                ("^", val_addr, val_addr, node_val_a),
+                                ("^", val_addr2, val_addr2, node_val_b),
                             ]
                         }
                     )
@@ -661,17 +718,25 @@ class KernelBuilder:
                         ]
                     }
                 )
-                self.instrs.extend(
-                    self.build_hash_vec_pair(
-                        val_addr7,
-                        vec_tmp1g,
-                        vec_tmp2g,
-                        val_addr8,
-                        vec_tmp1h,
-                        vec_tmp2h,
-                        hash_consts,
-                    )
+                hash67 = self.build_hash_vec_pair(
+                    val_addr7,
+                    vec_tmp1g,
+                    vec_tmp2g,
+                    val_addr8,
+                    vec_tmp1h,
+                    vec_tmp2h,
+                    hash_consts,
                 )
+                if has_prefetch:
+                    emit_hash_with_prefetch(
+                        hash67,
+                        vec_addr_prefetch,
+                        vec_addr_prefetch2,
+                        vec_node_val_prefetch,
+                        vec_node_val_prefetch2,
+                    )
+                else:
+                    self.instrs.extend(hash67)
                 self.emit_bundle(
                     {
                         "valu": [
