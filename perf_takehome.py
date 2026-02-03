@@ -180,6 +180,7 @@ class KernelBuilder:
         batch_size: int,
         rounds: int,
         debug_round_writes: bool = False,
+        debug_mode: bool = False,
     ):
         """
         Like reference_kernel2 but building actual instructions.
@@ -226,13 +227,17 @@ class KernelBuilder:
                         self.scratch_const(val), f"vec_hash_{val}"
                     )
 
+        if debug_round_writes and not debug_mode:
+            raise ValueError("debug_round_writes requires debug_mode=True")
+
         # Pause instructions are matched up with yield statements in the reference
         # kernel to let you debug at intermediate steps. The testing harness in this
         # file requires these match up to the reference kernel's yields, but the
         # submission harness ignores them.
-        self.add("flow", ("pause",))
-        # Any debug engine instruction is ignored by the submission simulator
-        self.add("debug", ("comment", "Starting loop"))
+        if debug_mode:
+            self.add("flow", ("pause",))
+            # Any debug engine instruction is ignored by the submission simulator
+            self.add("debug", ("comment", "Starting loop"))
 
         # Scalar scratch registers
         tmp_node_val = self.alloc_scratch("tmp_node_val")
@@ -279,6 +284,9 @@ class KernelBuilder:
         vec_tmp1h = self.alloc_scratch("vec_tmp1h", VLEN)
         vec_tmp2h = self.alloc_scratch("vec_tmp2h", VLEN)
 
+        vec_tail_idx = self.alloc_scratch("vec_tail_idx", VLEN)
+        vec_tail_val = self.alloc_scratch("vec_tail_val", VLEN)
+
         idx_buf = self.alloc_scratch("idx_buf", batch_size)
         val_buf = self.alloc_scratch("val_buf", batch_size)
 
@@ -291,6 +299,15 @@ class KernelBuilder:
         vec_end = batch_size - (batch_size % VLEN)
         vec_unroll = 8 * VLEN
         vec_unroll_end = vec_end - (vec_end % vec_unroll)
+        tail_len = batch_size - vec_end
+
+        idx_inp_ptr = self.alloc_scratch("idx_inp_ptr")
+        val_inp_ptr = self.alloc_scratch("val_inp_ptr")
+        idx_out_ptr = self.alloc_scratch("idx_out_ptr")
+        val_out_ptr = self.alloc_scratch("val_out_ptr")
+
+        self.emit("alu", ("+", idx_inp_ptr, self.scratch["inp_indices_p"], zero_const))
+        self.emit("alu", ("+", val_inp_ptr, self.scratch["inp_values_p"], zero_const))
 
         def emit_hash_with_prefetch(
             hash_instrs,
@@ -314,22 +331,20 @@ class KernelBuilder:
             self.instrs.extend(instrs)
 
         for i in range(0, vec_end, VLEN):
-            i_const = self.scratch_const(i)
             idx_addr = idx_buf + i
             val_addr = val_buf + i
-            self.emit("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const))
-            self.emit("load", ("vload", idx_addr, tmp_addr))
-            self.emit("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const))
-            self.emit("load", ("vload", val_addr, tmp_addr))
+            self.emit("load", ("vload", idx_addr, idx_inp_ptr))
+            self.emit("load", ("vload", val_addr, val_inp_ptr))
+            self.emit("flow", ("add_imm", idx_inp_ptr, idx_inp_ptr, VLEN))
+            self.emit("flow", ("add_imm", val_inp_ptr, val_inp_ptr, VLEN))
 
         for i in range(vec_end, batch_size):
-            i_const = self.scratch_const(i)
             idx_addr = idx_buf + i
             val_addr = val_buf + i
-            self.emit("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const))
-            self.emit("load", ("load", idx_addr, tmp_addr))
-            self.emit("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const))
-            self.emit("load", ("load", val_addr, tmp_addr))
+            self.emit("load", ("load", idx_addr, idx_inp_ptr))
+            self.emit("load", ("load", val_addr, val_inp_ptr))
+            self.emit("flow", ("add_imm", idx_inp_ptr, idx_inp_ptr, 1))
+            self.emit("flow", ("add_imm", val_inp_ptr, val_inp_ptr, 1))
 
         for round in range(rounds):
             for i in range(0, vec_unroll_end, vec_unroll):
@@ -481,31 +496,23 @@ class KernelBuilder:
                 self.emit_bundle(
                     {
                         "valu": [
-                            ("==", vec_tmp1, vec_tmp1, vec_zero),
-                            ("==", vec_tmp1b, vec_tmp1b, vec_zero),
-                            ("==", vec_tmp1c, vec_tmp1c, vec_zero),
-                            ("==", vec_tmp1d, vec_tmp1d, vec_zero),
-                            ("==", vec_tmp1e, vec_tmp1e, vec_zero),
-                            ("==", vec_tmp1f, vec_tmp1f, vec_zero),
+                            ("+", vec_tmp2, vec_tmp1, vec_one),
+                            ("+", vec_tmp2b, vec_tmp1b, vec_one),
+                            ("+", vec_tmp2c, vec_tmp1c, vec_one),
+                            ("+", vec_tmp2d, vec_tmp1d, vec_one),
+                            ("+", vec_tmp2e, vec_tmp1e, vec_one),
+                            ("+", vec_tmp2f, vec_tmp1f, vec_one),
                         ]
                     }
                 )
                 self.emit_bundle(
                     {
                         "valu": [
-                            ("==", vec_tmp1g, vec_tmp1g, vec_zero),
-                            ("==", vec_tmp1h, vec_tmp1h, vec_zero),
+                            ("+", vec_tmp2g, vec_tmp1g, vec_one),
+                            ("+", vec_tmp2h, vec_tmp1h, vec_one),
                         ]
                     }
                 )
-                self.emit("flow", ("vselect", vec_tmp2, vec_tmp1, vec_one, vec_two))
-                self.emit("flow", ("vselect", vec_tmp2b, vec_tmp1b, vec_one, vec_two))
-                self.emit("flow", ("vselect", vec_tmp2c, vec_tmp1c, vec_one, vec_two))
-                self.emit("flow", ("vselect", vec_tmp2d, vec_tmp1d, vec_one, vec_two))
-                self.emit("flow", ("vselect", vec_tmp2e, vec_tmp1e, vec_one, vec_two))
-                self.emit("flow", ("vselect", vec_tmp2f, vec_tmp1f, vec_one, vec_two))
-                self.emit("flow", ("vselect", vec_tmp2g, vec_tmp1g, vec_one, vec_two))
-                self.emit("flow", ("vselect", vec_tmp2h, vec_tmp1h, vec_one, vec_two))
                 self.emit_bundle(
                     {
                         "valu": [
@@ -768,8 +775,7 @@ class KernelBuilder:
                     self.build_hash_vec(val_addr, vec_tmp1, vec_tmp2, hash_consts)
                 )
                 self.emit("valu", ("&", vec_tmp1, val_addr, vec_one))
-                self.emit("valu", ("==", vec_tmp1, vec_tmp1, vec_zero))
-                self.emit("flow", ("vselect", vec_tmp2, vec_tmp1, vec_one, vec_two))
+                self.emit("valu", ("+", vec_tmp2, vec_tmp1, vec_one))
                 self.emit("valu", ("*", idx_addr, idx_addr, vec_two))
                 self.emit("valu", ("+", idx_addr, idx_addr, vec_tmp2))
                 self.emit("valu", ("<", vec_tmp1, idx_addr, vec_n_nodes))
@@ -786,71 +792,64 @@ class KernelBuilder:
                     )
                     self.emit("store", ("vstore", tmp_addr, val_addr))
 
-            for i in range(vec_end, batch_size):
-                i_const = self.scratch_const(i)
-                idx_addr = idx_buf + i
-                val_addr = val_buf + i
-                self.emit("alu", ("==", tmp1, cache_tag0, idx_addr))
-                self.emit("alu", ("==", tmp2, cache_tag1, idx_addr))
-                self.emit("alu", ("|", tmp3, tmp1, tmp2))
-                self.emit("flow", ("select", tmp_node_val, tmp1, cache_val0, cache_val1))
-                self.emit(
-                    "alu", ("+", tmp_addr, self.scratch["forest_values_p"], idx_addr)
-                )
-                self.emit("load", ("load", tmp_miss_val, tmp_addr))
-                self.emit(
-                    "flow", ("select", tmp_node_val, tmp3, tmp_node_val, tmp_miss_val)
-                )
-                self.emit("alu", ("==", tmp2, tmp3, zero_const))
-                self.emit("alu", ("==", tmp1, cache_toggle, zero_const))
-                self.emit("alu", ("&", tmp1, tmp1, tmp2))
-                self.emit("alu", ("==", tmp3, cache_toggle, one_const))
-                self.emit("alu", ("&", tmp3, tmp3, tmp2))
-                self.emit("flow", ("select", cache_tag0, tmp1, idx_addr, cache_tag0))
-                self.emit("flow", ("select", cache_val0, tmp1, tmp_node_val, cache_val0))
-                self.emit("flow", ("select", cache_tag1, tmp3, idx_addr, cache_tag1))
-                self.emit("flow", ("select", cache_val1, tmp3, tmp_node_val, cache_val1))
-                self.emit("alu", ("^", tmp1, cache_toggle, one_const))
-                self.emit("flow", ("select", cache_toggle, tmp2, tmp1, cache_toggle))
-                self.emit("alu", ("^", val_addr, val_addr, tmp_node_val))
-                self.instrs.extend(self.build_hash(val_addr, tmp1, tmp2))
-                self.emit("alu", ("&", tmp1, val_addr, parity_mask))
-                self.emit("alu", ("==", tmp1, tmp1, zero_const))
-                self.emit("flow", ("select", tmp3, tmp1, one_const, two_const))
-                self.emit("alu", ("*", idx_addr, idx_addr, two_const))
-                self.emit("alu", ("+", idx_addr, idx_addr, tmp3))
-                self.emit("alu", ("<", tmp1, idx_addr, self.scratch["n_nodes"]))
-                self.emit("flow", ("select", idx_addr, tmp1, idx_addr, zero_const))
-                if debug_round_writes:
-                    self.emit(
-                        "alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const)
+            if tail_len:
+                for lane in range(VLEN):
+                    idx_addr = idx_buf + vec_end + lane
+                    val_addr = val_buf + vec_end + lane
+                    if lane < tail_len:
+                        self.emit("alu", ("+", vec_tail_idx + lane, idx_addr, zero_const))
+                        self.emit("alu", ("+", vec_tail_val + lane, val_addr, zero_const))
+                    else:
+                        self.emit("alu", ("+", vec_tail_idx + lane, zero_const, zero_const))
+                        self.emit("alu", ("+", vec_tail_val + lane, zero_const, zero_const))
+
+                self.emit("valu", ("+", vec_addr, vec_tail_idx, vec_forest_values))
+                for lane in range(0, VLEN, 2):
+                    self.emit_group(
+                        "load",
+                        [
+                            ("load_offset", vec_node_val, vec_addr, lane),
+                            ("load_offset", vec_node_val, vec_addr, lane + 1),
+                        ],
                     )
-                    self.emit("store", ("store", tmp_addr, idx_addr))
-                    self.emit(
-                        "alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const)
-                    )
-                    self.emit("store", ("store", tmp_addr, val_addr))
+                self.emit("valu", ("^", vec_tail_val, vec_tail_val, vec_node_val))
+                self.instrs.extend(
+                    self.build_hash_vec(vec_tail_val, vec_tmp1, vec_tmp2, hash_consts)
+                )
+                self.emit("valu", ("&", vec_tmp1, vec_tail_val, vec_one))
+                self.emit("valu", ("+", vec_tmp2, vec_tmp1, vec_one))
+                self.emit("valu", ("*", vec_tail_idx, vec_tail_idx, vec_two))
+                self.emit("valu", ("+", vec_tail_idx, vec_tail_idx, vec_tmp2))
+                self.emit("valu", ("<", vec_tmp1, vec_tail_idx, vec_n_nodes))
+                self.emit("flow", ("vselect", vec_tail_idx, vec_tmp1, vec_tail_idx, vec_zero))
+
+                for lane in range(tail_len):
+                    idx_addr = idx_buf + vec_end + lane
+                    val_addr = val_buf + vec_end + lane
+                    self.emit("alu", ("+", idx_addr, vec_tail_idx + lane, zero_const))
+                    self.emit("alu", ("+", val_addr, vec_tail_val + lane, zero_const))
 
         if not debug_round_writes:
+            self.emit("alu", ("+", idx_out_ptr, self.scratch["inp_indices_p"], zero_const))
+            self.emit("alu", ("+", val_out_ptr, self.scratch["inp_values_p"], zero_const))
             for i in range(0, vec_end, VLEN):
-                i_const = self.scratch_const(i)
                 idx_addr = idx_buf + i
                 val_addr = val_buf + i
-                self.emit("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const))
-                self.emit("store", ("vstore", tmp_addr, idx_addr))
-                self.emit("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const))
-                self.emit("store", ("vstore", tmp_addr, val_addr))
+                self.emit("store", ("vstore", idx_out_ptr, idx_addr))
+                self.emit("store", ("vstore", val_out_ptr, val_addr))
+                self.emit("flow", ("add_imm", idx_out_ptr, idx_out_ptr, VLEN))
+                self.emit("flow", ("add_imm", val_out_ptr, val_out_ptr, VLEN))
 
             for i in range(vec_end, batch_size):
-                i_const = self.scratch_const(i)
                 idx_addr = idx_buf + i
                 val_addr = val_buf + i
-                self.emit("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const))
-                self.emit("store", ("store", tmp_addr, idx_addr))
-                self.emit("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const))
-                self.emit("store", ("store", tmp_addr, val_addr))
+                self.emit("store", ("store", idx_out_ptr, idx_addr))
+                self.emit("store", ("store", val_out_ptr, val_addr))
+                self.emit("flow", ("add_imm", idx_out_ptr, idx_out_ptr, 1))
+                self.emit("flow", ("add_imm", val_out_ptr, val_out_ptr, 1))
         # Required to match with the yield in reference_kernel2
-        self.instrs.append({"flow": [("pause",)]})
+        if debug_mode:
+            self.instrs.append({"flow": [("pause",)]})
 
 BASELINE = 147734
 
@@ -870,7 +869,12 @@ def do_kernel_test(
 
     kb = KernelBuilder()
     kb.build_kernel(
-        forest.height, len(forest.values), len(inp.indices), rounds, debug_round_writes=True
+        forest.height,
+        len(forest.values),
+        len(inp.indices),
+        rounds,
+        debug_round_writes=True,
+        debug_mode=True,
     )
     # print(kb.instrs)
 
