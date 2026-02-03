@@ -439,6 +439,93 @@ class KernelBuilder:
             self.emit("valu", ("<", vec_tmp1, idx_addr, vec_n_nodes))
             self.emit("valu", ("*", idx_addr, idx_addr, vec_tmp1))
 
+        def emit_vec_pair(i):
+            idx_addr = idx_buf + i
+            idx_addr2 = idx_buf + i + VLEN
+            val_addr = val_buf + i
+            val_addr2 = val_buf + i + VLEN
+            self.emit_bundle(
+                {
+                    "valu": [
+                        ("+", vec_addr, idx_addr, vec_forest_values),
+                        ("+", vec_addr2, idx_addr2, vec_forest_values),
+                    ]
+                }
+            )
+            for lane in range(0, VLEN, 2):
+                self.emit_group(
+                    "load",
+                    [
+                        ("load_offset", vec_node_val, vec_addr, lane),
+                        ("load_offset", vec_node_val, vec_addr, lane + 1),
+                    ],
+                )
+                self.emit_group(
+                    "load",
+                    [
+                        ("load_offset", vec_node_val2, vec_addr2, lane),
+                        ("load_offset", vec_node_val2, vec_addr2, lane + 1),
+                    ],
+                )
+            self.emit_bundle(
+                {
+                    "valu": [
+                        ("^", val_addr, val_addr, vec_node_val),
+                        ("^", val_addr2, val_addr2, vec_node_val2),
+                    ]
+                }
+            )
+            self.instrs.extend(
+                self.build_hash_vec_pair(
+                    val_addr,
+                    vec_tmp1,
+                    vec_tmp2,
+                    val_addr2,
+                    vec_tmp1b,
+                    vec_tmp2b,
+                    hash_consts,
+                )
+            )
+            self.emit_bundle(
+                {
+                    "valu": [
+                        ("&", vec_tmp1, val_addr, vec_one),
+                        ("&", vec_tmp1b, val_addr2, vec_one),
+                    ]
+                }
+            )
+            self.emit_bundle(
+                {
+                    "valu": [
+                        ("+", vec_tmp2, vec_tmp1, vec_one),
+                        ("+", vec_tmp2b, vec_tmp1b, vec_one),
+                    ]
+                }
+            )
+            self.emit_bundle(
+                {
+                    "valu": [
+                        ("multiply_add", idx_addr, idx_addr, vec_two, vec_tmp2),
+                        ("multiply_add", idx_addr2, idx_addr2, vec_two, vec_tmp2b),
+                    ]
+                }
+            )
+            self.emit_bundle(
+                {
+                    "valu": [
+                        ("<", vec_tmp1, idx_addr, vec_n_nodes),
+                        ("<", vec_tmp1b, idx_addr2, vec_n_nodes),
+                    ]
+                }
+            )
+            self.emit_bundle(
+                {
+                    "valu": [
+                        ("*", idx_addr, idx_addr, vec_tmp1),
+                        ("*", idx_addr2, idx_addr2, vec_tmp1b),
+                    ]
+                }
+            )
         self.emit("alu", ("+", idx_load_ptr, self.scratch["inp_indices_p"], zero_const))
         self.emit("alu", ("+", val_load_ptr, self.scratch["inp_values_p"], zero_const))
         for i in range(0, vec_end, VLEN):
@@ -457,7 +544,7 @@ class KernelBuilder:
                 }
             )
 
-        if fast_mode and tail_len:
+        if tail_len:
             idx_addr = idx_buf + vec_end
             val_addr = val_buf + vec_end
             lane = 0
@@ -502,21 +589,7 @@ class KernelBuilder:
                 self.emit("alu", ("+", idx_addr + lane, zero_const, zero_const))
                 self.emit("alu", ("+", val_addr + lane, zero_const, zero_const))
         elif not fast_mode:
-            for i in range(vec_end, batch_size):
-                idx_addr = idx_buf + i
-                val_addr = val_buf + i
-                self.emit_bundle(
-                    {
-                        "load": [
-                            ("load", idx_addr, idx_load_ptr),
-                            ("load", val_addr, val_load_ptr),
-                        ],
-                        "alu": [
-                            ("+", idx_load_ptr, idx_load_ptr, one_const),
-                            ("+", val_load_ptr, val_load_ptr, one_const),
-                        ],
-                    }
-                )
+            pass
 
         for round in range(rounds):
             if debug_round_writes:
@@ -925,8 +998,9 @@ class KernelBuilder:
                             }
                         )
 
-            for i in range(vec_unroll_end, vec_end, VLEN):
-                emit_vec_block(i)
+            pair_end = vec_end - ((vec_end - vec_unroll_end) % (2 * VLEN))
+            for i in range(vec_unroll_end, pair_end, 2 * VLEN):
+                emit_vec_pair(i)
                 if debug_round_writes:
                     self.emit_bundle(
                         {
@@ -936,12 +1010,39 @@ class KernelBuilder:
                     )
                     self.emit_bundle(
                         {
+                            "store": [("vstore", debug_idx_ptr, idx_buf + i + VLEN)],
+                            "alu": [("+", debug_idx_ptr, debug_idx_ptr, vlen_const)],
+                        }
+                    )
+                    self.emit_bundle(
+                        {
                             "store": [("vstore", debug_val_ptr, val_buf + i)],
                             "alu": [("+", debug_val_ptr, debug_val_ptr, vlen_const)],
                         }
                     )
+                    self.emit_bundle(
+                        {
+                            "store": [("vstore", debug_val_ptr, val_buf + i + VLEN)],
+                            "alu": [("+", debug_val_ptr, debug_val_ptr, vlen_const)],
+                        }
+                    )
+            if pair_end < vec_end:
+                emit_vec_block(pair_end)
+                if debug_round_writes:
+                    self.emit_bundle(
+                        {
+                            "store": [("vstore", debug_idx_ptr, idx_buf + pair_end)],
+                            "alu": [("+", debug_idx_ptr, debug_idx_ptr, vlen_const)],
+                        }
+                    )
+                    self.emit_bundle(
+                        {
+                            "store": [("vstore", debug_val_ptr, val_buf + pair_end)],
+                            "alu": [("+", debug_val_ptr, debug_val_ptr, vlen_const)],
+                        }
+                    )
 
-            if fast_mode and tail_len:
+            if tail_len:
                 emit_vec_block(vec_end)
 
             if not fast_mode:
@@ -1075,7 +1176,7 @@ def do_kernel_test(
         len(forest.values),
         len(inp.indices),
         rounds,
-        debug_round_writes=True,
+        debug_round_writes=False,
         fast_mode=False,
     )
     # print(kb.instrs)
