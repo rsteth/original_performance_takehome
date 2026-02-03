@@ -208,9 +208,12 @@ class KernelBuilder:
         zero_const = self.scratch_const(0)
         one_const = self.scratch_const(1)
         two_const = self.scratch_const(2)
+        vlen_const = self.scratch_const(VLEN, "vlen_const")
+        cache_invalid = self.scratch_const(0xFFFFFFFF, "cache_invalid")
         vec_zero = self.broadcast_const(zero_const, "vec_zero")
         vec_one = self.broadcast_const(one_const, "vec_one")
         vec_two = self.broadcast_const(two_const, "vec_two")
+        vec_cache_invalid = self.broadcast_const(cache_invalid, "vec_cache_invalid")
         vec_n_nodes = self.broadcast_const(self.scratch["n_nodes"], "vec_n_nodes")
         vec_forest_values = self.broadcast_const(
             self.scratch["forest_values_p"], "vec_forest_values_p"
@@ -226,7 +229,6 @@ class KernelBuilder:
 
         if not fast_mode:
             parity_mask = self.scratch_const(1, "parity_mask")
-            cache_invalid = self.scratch_const(0xFFFFFFFF, "cache_invalid")
             # Pause instructions are matched up with yield statements in the reference
             # kernel to let you debug at intermediate steps. The testing harness in this
             # file requires these match up to the reference kernel's yields, but the
@@ -282,6 +284,23 @@ class KernelBuilder:
         vec_tmp1h = self.alloc_scratch("vec_tmp1h", VLEN)
         vec_tmp2h = self.alloc_scratch("vec_tmp2h", VLEN)
 
+        vec_cache_tag = self.alloc_scratch("vec_cache_tag", VLEN)
+        vec_cache_val = self.alloc_scratch("vec_cache_val", VLEN)
+        vec_cache_tag2 = self.alloc_scratch("vec_cache_tag2", VLEN)
+        vec_cache_val2 = self.alloc_scratch("vec_cache_val2", VLEN)
+        vec_cache_tag3 = self.alloc_scratch("vec_cache_tag3", VLEN)
+        vec_cache_val3 = self.alloc_scratch("vec_cache_val3", VLEN)
+        vec_cache_tag4 = self.alloc_scratch("vec_cache_tag4", VLEN)
+        vec_cache_val4 = self.alloc_scratch("vec_cache_val4", VLEN)
+        vec_cache_tag5 = self.alloc_scratch("vec_cache_tag5", VLEN)
+        vec_cache_val5 = self.alloc_scratch("vec_cache_val5", VLEN)
+        vec_cache_tag6 = self.alloc_scratch("vec_cache_tag6", VLEN)
+        vec_cache_val6 = self.alloc_scratch("vec_cache_val6", VLEN)
+        vec_cache_tag7 = self.alloc_scratch("vec_cache_tag7", VLEN)
+        vec_cache_val7 = self.alloc_scratch("vec_cache_val7", VLEN)
+        vec_cache_tag8 = self.alloc_scratch("vec_cache_tag8", VLEN)
+        vec_cache_val8 = self.alloc_scratch("vec_cache_val8", VLEN)
+
         idx_buf = self.alloc_scratch("idx_buf", batch_size)
         val_buf = self.alloc_scratch("val_buf", batch_size)
 
@@ -291,6 +310,42 @@ class KernelBuilder:
             self.emit("alu", ("+", cache_tag1, cache_invalid, zero_const))
             self.emit("alu", ("+", cache_val1, zero_const, zero_const))
             self.emit("alu", ("+", cache_toggle, zero_const, zero_const))
+        use_cache = False
+        if use_cache:
+            self.emit_bundle(
+                {
+                    "valu": [
+                        ("+", vec_cache_tag, vec_cache_invalid, vec_zero),
+                        ("+", vec_cache_val, vec_zero, vec_zero),
+                        ("+", vec_cache_tag2, vec_cache_invalid, vec_zero),
+                        ("+", vec_cache_val2, vec_zero, vec_zero),
+                        ("+", vec_cache_tag3, vec_cache_invalid, vec_zero),
+                        ("+", vec_cache_val3, vec_zero, vec_zero),
+                    ]
+                }
+            )
+            self.emit_bundle(
+                {
+                    "valu": [
+                        ("+", vec_cache_tag4, vec_cache_invalid, vec_zero),
+                        ("+", vec_cache_val4, vec_zero, vec_zero),
+                        ("+", vec_cache_tag5, vec_cache_invalid, vec_zero),
+                        ("+", vec_cache_val5, vec_zero, vec_zero),
+                        ("+", vec_cache_tag6, vec_cache_invalid, vec_zero),
+                        ("+", vec_cache_val6, vec_zero, vec_zero),
+                    ]
+                }
+            )
+            self.emit_bundle(
+                {
+                    "valu": [
+                        ("+", vec_cache_tag7, vec_cache_invalid, vec_zero),
+                        ("+", vec_cache_val7, vec_zero, vec_zero),
+                        ("+", vec_cache_tag8, vec_cache_invalid, vec_zero),
+                        ("+", vec_cache_val8, vec_zero, vec_zero),
+                    ]
+                }
+            )
 
         vec_end = batch_size - (batch_size % VLEN)
         vec_unroll = 8 * VLEN
@@ -335,14 +390,47 @@ class KernelBuilder:
                         ("load_offset", vec_node_val, vec_addr, lane + 1),
                     ],
                 )
-            self.emit("valu", ("^", val_addr, val_addr, vec_node_val))
+            if use_cache:
+                self.emit_bundle(
+                    {
+                        "valu": [
+                            ("==", vec_tmp1, idx_addr, vec_cache_tag),
+                            ("-", vec_tmp2, vec_one, vec_tmp1),
+                        ]
+                    }
+                )
+                self.emit_bundle(
+                    {
+                        "valu": [
+                            ("*", vec_tmp1, vec_tmp1, vec_cache_val),
+                            ("*", vec_tmp2, vec_tmp2, vec_node_val),
+                        ]
+                    }
+                )
+                self.emit_bundle(
+                    {
+                        "valu": [
+                            ("+", vec_node_val, vec_tmp1, vec_tmp2),
+                        ]
+                    }
+                )
+                self.emit_bundle(
+                    {
+                        "valu": [
+                            ("+", vec_cache_tag, idx_addr, vec_zero),
+                            ("+", vec_cache_val, vec_node_val, vec_zero),
+                        ]
+                    }
+                )
+                self.emit("valu", ("^", val_addr, val_addr, vec_node_val))
+            else:
+                self.emit("valu", ("^", val_addr, val_addr, vec_node_val))
             self.instrs.extend(
                 self.build_hash_vec(val_addr, vec_tmp1, vec_tmp2, hash_consts)
             )
             self.emit("valu", ("&", vec_tmp1, val_addr, vec_one))
             self.emit("valu", ("+", vec_tmp2, vec_tmp1, vec_one))
-            self.emit("valu", ("*", idx_addr, idx_addr, vec_two))
-            self.emit("valu", ("+", idx_addr, idx_addr, vec_tmp2))
+            self.emit("valu", ("multiply_add", idx_addr, idx_addr, vec_two, vec_tmp2))
             self.emit("valu", ("<", vec_tmp1, idx_addr, vec_n_nodes))
             self.emit("valu", ("*", idx_addr, idx_addr, vec_tmp1))
 
@@ -351,19 +439,35 @@ class KernelBuilder:
         for i in range(0, vec_end, VLEN):
             idx_addr = idx_buf + i
             val_addr = val_buf + i
-            self.emit("load", ("vload", idx_addr, idx_load_ptr))
-            self.emit("load", ("vload", val_addr, val_load_ptr))
-            self.emit("flow", ("add_imm", idx_load_ptr, idx_load_ptr, VLEN))
-            self.emit("flow", ("add_imm", val_load_ptr, val_load_ptr, VLEN))
+            self.emit_bundle(
+                {
+                    "load": [
+                        ("vload", idx_addr, idx_load_ptr),
+                        ("vload", val_addr, val_load_ptr),
+                    ],
+                    "alu": [
+                        ("+", idx_load_ptr, idx_load_ptr, vlen_const),
+                        ("+", val_load_ptr, val_load_ptr, vlen_const),
+                    ],
+                }
+            )
 
         if fast_mode and tail_len:
             idx_addr = idx_buf + vec_end
             val_addr = val_buf + vec_end
             for lane in range(tail_len):
-                self.emit("load", ("load", idx_addr + lane, idx_load_ptr))
-                self.emit("load", ("load", val_addr + lane, val_load_ptr))
-                self.emit("flow", ("add_imm", idx_load_ptr, idx_load_ptr, 1))
-                self.emit("flow", ("add_imm", val_load_ptr, val_load_ptr, 1))
+                self.emit_bundle(
+                    {
+                        "load": [
+                            ("load", idx_addr + lane, idx_load_ptr),
+                            ("load", val_addr + lane, val_load_ptr),
+                        ],
+                        "alu": [
+                            ("+", idx_load_ptr, idx_load_ptr, one_const),
+                            ("+", val_load_ptr, val_load_ptr, one_const),
+                        ],
+                    }
+                )
             for lane in range(tail_len, VLEN):
                 self.emit("alu", ("+", idx_addr + lane, zero_const, zero_const))
                 self.emit("alu", ("+", val_addr + lane, zero_const, zero_const))
@@ -371,10 +475,18 @@ class KernelBuilder:
             for i in range(vec_end, batch_size):
                 idx_addr = idx_buf + i
                 val_addr = val_buf + i
-                self.emit("load", ("load", idx_addr, idx_load_ptr))
-                self.emit("load", ("load", val_addr, val_load_ptr))
-                self.emit("flow", ("add_imm", idx_load_ptr, idx_load_ptr, 1))
-                self.emit("flow", ("add_imm", val_load_ptr, val_load_ptr, 1))
+                self.emit_bundle(
+                    {
+                        "load": [
+                            ("load", idx_addr, idx_load_ptr),
+                            ("load", val_addr, val_load_ptr),
+                        ],
+                        "alu": [
+                            ("+", idx_load_ptr, idx_load_ptr, one_const),
+                            ("+", val_load_ptr, val_load_ptr, one_const),
+                        ],
+                    }
+                )
 
         for round in range(rounds):
             if debug_round_writes:
@@ -433,14 +545,62 @@ class KernelBuilder:
                             ]
                         }
                     )
-                self.emit_bundle(
-                    {
-                        "valu": [
-                            ("^", val_addr, val_addr, vec_node_val),
-                            ("^", val_addr2, val_addr2, vec_node_val2),
-                        ]
-                    }
-                )
+                if use_cache:
+                    self.emit_bundle(
+                        {
+                            "valu": [
+                                ("==", vec_tmp1, idx_addr, vec_cache_tag),
+                                ("==", vec_tmp1b, idx_addr2, vec_cache_tag2),
+                                ("-", vec_tmp2, vec_one, vec_tmp1),
+                                ("-", vec_tmp2b, vec_one, vec_tmp1b),
+                            ]
+                        }
+                    )
+                    self.emit_bundle(
+                        {
+                            "valu": [
+                                ("*", vec_tmp1, vec_tmp1, vec_cache_val),
+                                ("*", vec_tmp1b, vec_tmp1b, vec_cache_val2),
+                                ("*", vec_tmp2, vec_tmp2, vec_node_val),
+                                ("*", vec_tmp2b, vec_tmp2b, vec_node_val2),
+                            ]
+                        }
+                    )
+                    self.emit_bundle(
+                        {
+                            "valu": [
+                                ("+", vec_node_val, vec_tmp1, vec_tmp2),
+                                ("+", vec_node_val2, vec_tmp1b, vec_tmp2b),
+                            ]
+                        }
+                    )
+                    self.emit_bundle(
+                        {
+                            "valu": [
+                                ("+", vec_cache_tag, idx_addr, vec_zero),
+                                ("+", vec_cache_val, vec_node_val, vec_zero),
+                                ("+", vec_cache_tag2, idx_addr2, vec_zero),
+                                ("+", vec_cache_val2, vec_node_val2, vec_zero),
+                            ]
+                        }
+                    )
+                    self.emit_bundle(
+                        {
+                            "valu": [
+                                ("^", val_addr, val_addr, vec_node_val),
+                                ("^", val_addr2, val_addr2, vec_node_val2),
+                            ]
+                        }
+                    )
+                else:
+                    self.emit_bundle(
+                        {
+                            "valu": [
+                                ("^", val_addr, val_addr, vec_node_val),
+                                ("^", val_addr2, val_addr2, vec_node_val2),
+                            ]
+                        }
+                    )
                 hash01 = self.build_hash_vec_pair(
                     val_addr,
                     vec_tmp1,
@@ -555,40 +715,68 @@ class KernelBuilder:
                 self.emit_bundle(
                     {
                         "valu": [
-                            ("*", idx_addr, idx_addr, vec_two),
-                            ("*", idx_addr2, idx_addr2, vec_two),
-                            ("*", idx_addr3, idx_addr3, vec_two),
-                            ("*", idx_addr4, idx_addr4, vec_two),
-                            ("*", idx_addr5, idx_addr5, vec_two),
-                            ("*", idx_addr6, idx_addr6, vec_two),
+                            (
+                                "multiply_add",
+                                idx_addr,
+                                idx_addr,
+                                vec_two,
+                                vec_tmp2,
+                            ),
+                            (
+                                "multiply_add",
+                                idx_addr2,
+                                idx_addr2,
+                                vec_two,
+                                vec_tmp2b,
+                            ),
+                            (
+                                "multiply_add",
+                                idx_addr3,
+                                idx_addr3,
+                                vec_two,
+                                vec_tmp2c,
+                            ),
+                            (
+                                "multiply_add",
+                                idx_addr4,
+                                idx_addr4,
+                                vec_two,
+                                vec_tmp2d,
+                            ),
+                            (
+                                "multiply_add",
+                                idx_addr5,
+                                idx_addr5,
+                                vec_two,
+                                vec_tmp2e,
+                            ),
+                            (
+                                "multiply_add",
+                                idx_addr6,
+                                idx_addr6,
+                                vec_two,
+                                vec_tmp2f,
+                            ),
                         ]
                     }
                 )
                 self.emit_bundle(
                     {
                         "valu": [
-                            ("*", idx_addr7, idx_addr7, vec_two),
-                            ("*", idx_addr8, idx_addr8, vec_two),
-                        ]
-                    }
-                )
-                self.emit_bundle(
-                    {
-                        "valu": [
-                            ("+", idx_addr, idx_addr, vec_tmp2),
-                            ("+", idx_addr2, idx_addr2, vec_tmp2b),
-                            ("+", idx_addr3, idx_addr3, vec_tmp2c),
-                            ("+", idx_addr4, idx_addr4, vec_tmp2d),
-                            ("+", idx_addr5, idx_addr5, vec_tmp2e),
-                            ("+", idx_addr6, idx_addr6, vec_tmp2f),
-                        ]
-                    }
-                )
-                self.emit_bundle(
-                    {
-                        "valu": [
-                            ("+", idx_addr7, idx_addr7, vec_tmp2g),
-                            ("+", idx_addr8, idx_addr8, vec_tmp2h),
+                            (
+                                "multiply_add",
+                                idx_addr7,
+                                idx_addr7,
+                                vec_two,
+                                vec_tmp2g,
+                            ),
+                            (
+                                "multiply_add",
+                                idx_addr8,
+                                idx_addr8,
+                                vec_two,
+                                vec_tmp2h,
+                            ),
                         ]
                     }
                 )
@@ -634,47 +822,59 @@ class KernelBuilder:
                 )
 
                 if debug_round_writes:
-                    self.emit("store", ("vstore", debug_idx_ptr, idx_addr))
-                    self.emit("flow", ("add_imm", debug_idx_ptr, debug_idx_ptr, VLEN))
-                    self.emit("store", ("vstore", debug_idx_ptr, idx_addr2))
-                    self.emit("flow", ("add_imm", debug_idx_ptr, debug_idx_ptr, VLEN))
-                    self.emit("store", ("vstore", debug_idx_ptr, idx_addr3))
-                    self.emit("flow", ("add_imm", debug_idx_ptr, debug_idx_ptr, VLEN))
-                    self.emit("store", ("vstore", debug_idx_ptr, idx_addr4))
-                    self.emit("flow", ("add_imm", debug_idx_ptr, debug_idx_ptr, VLEN))
-                    self.emit("store", ("vstore", debug_idx_ptr, idx_addr5))
-                    self.emit("flow", ("add_imm", debug_idx_ptr, debug_idx_ptr, VLEN))
-                    self.emit("store", ("vstore", debug_idx_ptr, idx_addr6))
-                    self.emit("flow", ("add_imm", debug_idx_ptr, debug_idx_ptr, VLEN))
-                    self.emit("store", ("vstore", debug_idx_ptr, idx_addr7))
-                    self.emit("flow", ("add_imm", debug_idx_ptr, debug_idx_ptr, VLEN))
-                    self.emit("store", ("vstore", debug_idx_ptr, idx_addr8))
-                    self.emit("flow", ("add_imm", debug_idx_ptr, debug_idx_ptr, VLEN))
+                    for addr in (
+                        idx_addr,
+                        idx_addr2,
+                        idx_addr3,
+                        idx_addr4,
+                        idx_addr5,
+                        idx_addr6,
+                        idx_addr7,
+                        idx_addr8,
+                    ):
+                        self.emit_bundle(
+                            {
+                                "store": [("vstore", debug_idx_ptr, addr)],
+                                "alu": [
+                                    ("+", debug_idx_ptr, debug_idx_ptr, vlen_const)
+                                ],
+                            }
+                        )
 
-                    self.emit("store", ("vstore", debug_val_ptr, val_addr))
-                    self.emit("flow", ("add_imm", debug_val_ptr, debug_val_ptr, VLEN))
-                    self.emit("store", ("vstore", debug_val_ptr, val_addr2))
-                    self.emit("flow", ("add_imm", debug_val_ptr, debug_val_ptr, VLEN))
-                    self.emit("store", ("vstore", debug_val_ptr, val_addr3))
-                    self.emit("flow", ("add_imm", debug_val_ptr, debug_val_ptr, VLEN))
-                    self.emit("store", ("vstore", debug_val_ptr, val_addr4))
-                    self.emit("flow", ("add_imm", debug_val_ptr, debug_val_ptr, VLEN))
-                    self.emit("store", ("vstore", debug_val_ptr, val_addr5))
-                    self.emit("flow", ("add_imm", debug_val_ptr, debug_val_ptr, VLEN))
-                    self.emit("store", ("vstore", debug_val_ptr, val_addr6))
-                    self.emit("flow", ("add_imm", debug_val_ptr, debug_val_ptr, VLEN))
-                    self.emit("store", ("vstore", debug_val_ptr, val_addr7))
-                    self.emit("flow", ("add_imm", debug_val_ptr, debug_val_ptr, VLEN))
-                    self.emit("store", ("vstore", debug_val_ptr, val_addr8))
-                    self.emit("flow", ("add_imm", debug_val_ptr, debug_val_ptr, VLEN))
+                    for addr in (
+                        val_addr,
+                        val_addr2,
+                        val_addr3,
+                        val_addr4,
+                        val_addr5,
+                        val_addr6,
+                        val_addr7,
+                        val_addr8,
+                    ):
+                        self.emit_bundle(
+                            {
+                                "store": [("vstore", debug_val_ptr, addr)],
+                                "alu": [
+                                    ("+", debug_val_ptr, debug_val_ptr, vlen_const)
+                                ],
+                            }
+                        )
 
             for i in range(vec_unroll_end, vec_end, VLEN):
                 emit_vec_block(i)
                 if debug_round_writes:
-                    self.emit("store", ("vstore", debug_idx_ptr, idx_buf + i))
-                    self.emit("flow", ("add_imm", debug_idx_ptr, debug_idx_ptr, VLEN))
-                    self.emit("store", ("vstore", debug_val_ptr, val_buf + i))
-                    self.emit("flow", ("add_imm", debug_val_ptr, debug_val_ptr, VLEN))
+                    self.emit_bundle(
+                        {
+                            "store": [("vstore", debug_idx_ptr, idx_buf + i)],
+                            "alu": [("+", debug_idx_ptr, debug_idx_ptr, vlen_const)],
+                        }
+                    )
+                    self.emit_bundle(
+                        {
+                            "store": [("vstore", debug_val_ptr, val_buf + i)],
+                            "alu": [("+", debug_val_ptr, debug_val_ptr, vlen_const)],
+                        }
+                    )
 
             if fast_mode and tail_len:
                 emit_vec_block(vec_end)
@@ -687,32 +887,51 @@ class KernelBuilder:
                     self.emit("alu", ("==", tmp1, cache_tag0, idx_addr))
                     self.emit("alu", ("==", tmp2, cache_tag1, idx_addr))
                     self.emit("alu", ("|", tmp3, tmp1, tmp2))
-                    self.emit(
-                        "flow", ("select", tmp_node_val, tmp1, cache_val0, cache_val1)
-                    )
+                    self.emit("alu", ("*", tmp2, tmp1, cache_invalid))
+                    self.emit("alu", ("^", tmp_addr2, tmp2, cache_invalid))
+                    self.emit("alu", ("&", tmp1, tmp2, cache_val0))
+                    self.emit("alu", ("&", tmp2, tmp_addr2, cache_val1))
+                    self.emit("alu", ("|", tmp_node_val, tmp1, tmp2))
                     self.emit(
                         "alu", ("+", tmp_addr, self.scratch["forest_values_p"], idx_addr)
                     )
                     self.emit("load", ("load", tmp_miss_val, tmp_addr))
-                    self.emit(
-                        "flow",
-                        ("select", tmp_node_val, tmp3, tmp_node_val, tmp_miss_val),
-                    )
+                    self.emit("alu", ("*", tmp2, tmp3, cache_invalid))
+                    self.emit("alu", ("^", tmp_addr2, tmp2, cache_invalid))
+                    self.emit("alu", ("&", tmp1, tmp2, tmp_node_val))
+                    self.emit("alu", ("&", tmp2, tmp_addr2, tmp_miss_val))
+                    self.emit("alu", ("|", tmp_node_val, tmp1, tmp2))
                     self.emit("alu", ("==", tmp2, tmp3, zero_const))
                     self.emit("alu", ("==", tmp1, cache_toggle, zero_const))
                     self.emit("alu", ("&", tmp1, tmp1, tmp2))
                     self.emit("alu", ("==", tmp3, cache_toggle, one_const))
                     self.emit("alu", ("&", tmp3, tmp3, tmp2))
-                    self.emit("flow", ("select", cache_tag0, tmp1, idx_addr, cache_tag0))
-                    self.emit(
-                        "flow", ("select", cache_val0, tmp1, tmp_node_val, cache_val0)
-                    )
-                    self.emit("flow", ("select", cache_tag1, tmp3, idx_addr, cache_tag1))
-                    self.emit(
-                        "flow", ("select", cache_val1, tmp3, tmp_node_val, cache_val1)
-                    )
+                    self.emit("alu", ("*", tmp_addr2, tmp1, cache_invalid))
+                    self.emit("alu", ("^", tmp2, tmp_addr2, cache_invalid))
+                    self.emit("alu", ("&", tmp_addr, tmp_addr2, idx_addr))
+                    self.emit("alu", ("&", tmp2, tmp2, cache_tag0))
+                    self.emit("alu", ("|", cache_tag0, tmp_addr, tmp2))
+                    self.emit("alu", ("*", tmp_addr2, tmp1, cache_invalid))
+                    self.emit("alu", ("^", tmp2, tmp_addr2, cache_invalid))
+                    self.emit("alu", ("&", tmp_addr, tmp_addr2, tmp_node_val))
+                    self.emit("alu", ("&", tmp2, tmp2, cache_val0))
+                    self.emit("alu", ("|", cache_val0, tmp_addr, tmp2))
+                    self.emit("alu", ("*", tmp_addr2, tmp3, cache_invalid))
+                    self.emit("alu", ("^", tmp2, tmp_addr2, cache_invalid))
+                    self.emit("alu", ("&", tmp_addr, tmp_addr2, idx_addr))
+                    self.emit("alu", ("&", tmp2, tmp2, cache_tag1))
+                    self.emit("alu", ("|", cache_tag1, tmp_addr, tmp2))
+                    self.emit("alu", ("*", tmp_addr2, tmp3, cache_invalid))
+                    self.emit("alu", ("^", tmp2, tmp_addr2, cache_invalid))
+                    self.emit("alu", ("&", tmp_addr, tmp_addr2, tmp_node_val))
+                    self.emit("alu", ("&", tmp2, tmp2, cache_val1))
+                    self.emit("alu", ("|", cache_val1, tmp_addr, tmp2))
                     self.emit("alu", ("^", tmp1, cache_toggle, one_const))
-                    self.emit("flow", ("select", cache_toggle, tmp2, tmp1, cache_toggle))
+                    self.emit("alu", ("*", tmp_addr2, tmp2, cache_invalid))
+                    self.emit("alu", ("^", tmp3, tmp_addr2, cache_invalid))
+                    self.emit("alu", ("&", tmp_addr, tmp_addr2, tmp1))
+                    self.emit("alu", ("&", tmp3, tmp3, cache_toggle))
+                    self.emit("alu", ("|", cache_toggle, tmp_addr, tmp3))
                     self.emit("alu", ("^", val_addr, val_addr, tmp_node_val))
                     self.instrs.extend(self.build_hash(val_addr, tmp1, tmp2))
                     self.emit("alu", ("&", tmp1, val_addr, parity_mask))
@@ -723,9 +942,9 @@ class KernelBuilder:
                     self.emit("alu", ("*", idx_addr, idx_addr, tmp1))
                     if debug_round_writes:
                         self.emit("store", ("store", debug_idx_ptr, idx_addr))
-                        self.emit("flow", ("add_imm", debug_idx_ptr, debug_idx_ptr, 1))
+                        self.emit("alu", ("+", debug_idx_ptr, debug_idx_ptr, one_const))
                         self.emit("store", ("store", debug_val_ptr, val_addr))
-                        self.emit("flow", ("add_imm", debug_val_ptr, debug_val_ptr, 1))
+                        self.emit("alu", ("+", debug_val_ptr, debug_val_ptr, one_const))
 
         if not debug_round_writes:
             self.emit(
@@ -737,18 +956,34 @@ class KernelBuilder:
             for i in range(0, vec_end, VLEN):
                 idx_addr = idx_buf + i
                 val_addr = val_buf + i
-                self.emit("store", ("vstore", idx_store_ptr, idx_addr))
-                self.emit("store", ("vstore", val_store_ptr, val_addr))
-                self.emit("flow", ("add_imm", idx_store_ptr, idx_store_ptr, VLEN))
-                self.emit("flow", ("add_imm", val_store_ptr, val_store_ptr, VLEN))
+                self.emit_bundle(
+                    {
+                        "store": [
+                            ("vstore", idx_store_ptr, idx_addr),
+                            ("vstore", val_store_ptr, val_addr),
+                        ],
+                        "alu": [
+                            ("+", idx_store_ptr, idx_store_ptr, vlen_const),
+                            ("+", val_store_ptr, val_store_ptr, vlen_const),
+                        ],
+                    }
+                )
 
             for i in range(vec_end, batch_size):
                 idx_addr = idx_buf + i
                 val_addr = val_buf + i
-                self.emit("store", ("store", idx_store_ptr, idx_addr))
-                self.emit("store", ("store", val_store_ptr, val_addr))
-                self.emit("flow", ("add_imm", idx_store_ptr, idx_store_ptr, 1))
-                self.emit("flow", ("add_imm", val_store_ptr, val_store_ptr, 1))
+                self.emit_bundle(
+                    {
+                        "store": [
+                            ("store", idx_store_ptr, idx_addr),
+                            ("store", val_store_ptr, val_addr),
+                        ],
+                        "alu": [
+                            ("+", idx_store_ptr, idx_store_ptr, one_const),
+                            ("+", val_store_ptr, val_store_ptr, one_const),
+                        ],
+                    }
+                )
         # Required to match with the yield in reference_kernel2
         if not fast_mode:
             self.instrs.append({"flow": [("pause",)]})
